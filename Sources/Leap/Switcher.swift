@@ -29,6 +29,9 @@ final class Switcher {
     private var peekShown = false
     private var peekFallback: DispatchWorkItem?
     private static let holdDelay = 0.22
+    /// Hovering a drag over an app this long switches to it, so the drag can continue into its window.
+    private static let springDelay = 0.5
+    private var springTimer: DispatchWorkItem?
 
     /// Tells the event tap to stop swallowing keys.
     var onClose: (() -> Void)?
@@ -47,6 +50,9 @@ final class Switcher {
             self.selected = i
             self.commit()
         }
+        window.onHover = { [weak self] i in self?.hover(i) }
+        window.onDragHover = { [weak self] i in self?.dragHover(i) }
+        window.onDrop = { [weak self] i, urls in self?.drop(i, urls) }
         apps.onLaunch = { [weak self] app in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = self?.icons.image(for: app) }
         }
@@ -142,6 +148,45 @@ final class Switcher {
             typed = []
             refreshDim()
         }
+    }
+
+    // MARK: Mouse and drag
+
+    private func hover(_ i: Int) {
+        guard isVisible, held == nil, i != selected, i < items.count else { return }
+        selected = i
+        window.select(i)
+    }
+
+    /// Spring-loading: a drag resting on an app switches to it, like clicking it.
+    private func dragHover(_ i: Int?) {
+        springTimer?.cancel()
+        springTimer = nil
+        guard isVisible, let i, i < items.count else { return }
+        hover(i)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isVisible, self.selected == i else { return }
+            self.commit()
+        }
+        springTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.springDelay, execute: work)
+    }
+
+    /// Dropping files on an app opens them with it (like the Dock); anything else just switches to it.
+    private func drop(_ i: Int, _ urls: [URL]) {
+        springTimer?.cancel()
+        springTimer = nil
+        guard isVisible, i < items.count else { return }
+        let app = items[i]
+        guard !urls.isEmpty, let appURL = app.bundleURL else {
+            selected = i
+            commit()
+            return
+        }
+        hide()
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.open(urls, withApplicationAt: appURL, configuration: config)
     }
 
     // MARK: Hold to peek
@@ -341,6 +386,8 @@ final class Switcher {
 
     private func hide() {
         cancelHold()
+        springTimer?.cancel()
+        springTimer = nil
         onClose?()
         isVisible = false
         quitting = []

@@ -84,6 +84,21 @@ final class SwitcherWindow {
         get { grid.onClick }
         set { grid.onClick = newValue }
     }
+    /// The pointer moved onto a cell.
+    var onHover: ((Int) -> Void)? {
+        get { grid.onHover }
+        set { grid.onHover = newValue }
+    }
+    /// A drag is over a cell (nil when it leaves the cells).
+    var onDragHover: ((Int?) -> Void)? {
+        get { grid.onDragHover }
+        set { grid.onDragHover = newValue }
+    }
+    /// Something was dropped on a cell; file URLs if it carried any.
+    var onDrop: ((Int, [URL]) -> Void)? {
+        get { grid.onDrop }
+        set { grid.onDrop = newValue }
+    }
 
     init() {
         panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
@@ -96,6 +111,7 @@ final class SwitcherWindow {
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.acceptsMouseMovedEvents = true
 
         effect.blendingMode = .behindWindow
         effect.state = .active
@@ -380,18 +396,67 @@ private final class PeekPanel: NSPanel {
 private final class GridView: NSView {
     var cellFrames: [CGRect] = []
     var onClick: ((Int) -> Void)?
+    var onHover: ((Int) -> Void)?
+    var onDragHover: ((Int?) -> Void)?
+    var onDrop: ((Int, [URL]) -> Void)?
+    private var dragIndex: Int?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        registerForDraggedTypes([.fileURL, .URL, .string, .tiff, .png, .pdf, .rtf, .html])
     }
     required init?(coder: NSCoder) { fatalError() }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    // Leap is never the active app, so track the pointer regardless of activation.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    private func index(at windowPoint: NSPoint) -> Int? {
+        let p = convert(windowPoint, from: nil)
+        return cellFrames.firstIndex { $0.contains(p) }
+    }
+
     override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        if let i = cellFrames.firstIndex(where: { $0.contains(p) }) { onClick?(i) }
+        if let i = index(at: event.locationInWindow) { onClick?(i) }
+    }
+
+    /// Only real movement selects, so a pointer that happens to sit where the panel appears doesn't steal the selection.
+    override func mouseMoved(with event: NSEvent) {
+        if let i = index(at: event.locationInWindow) { onHover?(i) }
+    }
+
+    // MARK: Drag destination
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { dragUpdate(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { dragUpdate(sender) }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dragIndex = nil
+        onDragHover?(nil)
+    }
+
+    private func dragUpdate(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let i = index(at: sender.draggingLocation)
+        if i != dragIndex {
+            dragIndex = i
+            onDragHover?(i)
+        }
+        return i == nil ? [] : .generic
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let i = index(at: sender.draggingLocation) else { return false }
+        dragIndex = nil
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                         options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        onDrop?(i, urls)
+        return true
     }
 }
 
