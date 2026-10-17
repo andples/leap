@@ -114,7 +114,9 @@ final class SwitcherWindow {
         self.entries = entries
         self.mode = mode
         let settings = Settings.shared
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
+        // While already showing (live preview, apps quitting), stay on the same screen and keep the same center.
+        let mouseScreen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+        let screen = (panel.isVisible ? panel.screen : nil) ?? mouseScreen ?? NSScreen.main!
         applyAppearance(settings)
 
         var m = Metrics.styled(mode, settings)
@@ -131,8 +133,12 @@ final class SwitcherWindow {
         let scale = screen.backingScaleFactor
         let style = self.style!
 
+        // Resize first and lay out in the same transaction, so the new layout never shows in the old frame.
+        let origin = CGPoint(x: (screen.frame.midX - s.width / 2).rounded(), y: (screen.frame.midY - s.height / 2).rounded())
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        panel.setFrame(NSRect(origin: origin, size: s), display: false)
+        grid.layoutSubtreeIfNeeded()
         tint.frame = CGRect(origin: .zero, size: s)
         while cells.count < entries.count {
             let c = CellLayer()
@@ -153,9 +159,7 @@ final class SwitcherWindow {
             cells[i].opacity = 1
         }
         CATransaction.commit()
-
-        let origin = CGPoint(x: (screen.frame.midX - s.width / 2).rounded(), y: (screen.frame.midY - s.height / 2).rounded())
-        panel.setFrame(NSRect(origin: origin, size: s), display: true)
+        panel.displayIfNeeded()
         panel.orderFrontRegardless()
     }
 

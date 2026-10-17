@@ -17,8 +17,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             let mode = args.count > i + 2 ? Mode(rawValue: args[i + 2]) ?? .icons : .icons
-            switcher.snapshot(to: args[i + 1], mode: mode)
-            exit(0)
+            _ = switcher
+            // Give background checks (e.g. Finder's windows) a moment to land first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.switcher.snapshot(to: args[i + 1], mode: mode)
+                exit(0)
+            }
+            return
         }
 
         setupStatusItem()

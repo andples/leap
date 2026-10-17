@@ -14,20 +14,15 @@ public struct AppInfo: Equatable, Sendable {
     public init(id: String, name: String, uses: Int) { self.id = id; self.name = name; self.uses = uses }
 }
 
-public struct Arrangement: Equatable, Sendable {
-    /// Indices into the input, in slot order (item i goes in plan slot i).
-    public let slots: [Int]
-    /// Positions in `slots`, in Tab order: previous app first, current app last.
-    public let cycle: [Int]
-}
 
 public enum Arranger {
     /// - Parameters:
     ///   - mru: apps most recent first; index 0 is the current app.
     ///   - primary: how many slots are on the home row.
     ///   - stableRest: sort the apps off the home row alphabetically so their keys stay put.
-    public static func arrange(_ mru: [AppInfo], ordering: Ordering, primary: Int, stableRest: Bool = true) -> Arrangement {
-        guard !mru.isEmpty else { return Arrangement(slots: [], cycle: []) }
+    /// Returns indices into `mru` in slot order (item i goes in plan slot i), which is also the Tab order.
+    public static func arrange(_ mru: [AppInfo], ordering: Ordering, primary: Int, stableRest: Bool = true) -> [Int] {
+        guard !mru.isEmpty else { return [] }
         // The current app never takes a home-row key: switching to it is pointless.
         var ranked = Array(mru.indices.dropFirst())
         if ordering == .usage {
@@ -44,11 +39,7 @@ public enum Arranger {
         } else if let current = rest.first, current == 0 {
             rest.append(rest.removeFirst())
         }
-        let slots = home + rest
-        var position = [Int](repeating: 0, count: mru.count)
-        for (pos, i) in slots.enumerated() { position[i] = pos }
-        let tabOrder = Array(mru.indices.dropFirst()) + [0]
-        return Arrangement(slots: slots, cycle: tabOrder.map { position[$0] })
+        return home + rest
     }
 }
 

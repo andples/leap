@@ -8,13 +8,14 @@ final class Switcher {
     private let apps: AppTracker
     private let icons = IconCache()
     let thumbs = ThumbnailCache()
+    private let finder = FinderWatch()
     private let window = SwitcherWindow()
 
     private var items: [NSRunningApplication] = []
     private var plan = GridPlan.empty
     private var selected = 0
-    /// Item indices in Tab order.
-    private var cycle: [Int] = []
+    /// Apps asked to quit from the switcher; shown dimmed until they're gone.
+    private var quitting = Set<pid_t>()
     private var typed: [KeyPos] = []
     private var swallowed = Set<Int64>()
     private(set) var isVisible = false
@@ -39,7 +40,12 @@ final class Switcher {
         apps.onLaunch = { [weak self] app in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = self?.icons.image(for: app) }
         }
+        apps.onChange = { [weak self] in self?.appsChanged() }
+        finder.onChange = { [weak self] in self?.appsChanged() }
+        finder.refresh()
         apps.onDeactivate = { [weak self] app in
+            // Windows usually get closed while their app is active, so re-check Finder on every switch.
+            self?.finder.refresh()
             // Keep previews warm: grab the window of the app we're leaving while it is still on screen.
             guard let self, self.mode == .previews, !self.isVisible else { return }
             self.thumbs.refresh([app.processIdentifier]) { _ in }
@@ -124,21 +130,25 @@ final class Switcher {
     /// Lays out the running apps: picks the grid, who gets the home row, and the Tab order.
     @discardableResult
     private func prepare() -> Bool {
-        let mru = Array(apps.current().prefix(HintGrid.maxItems))
+        var mru = apps.current()
+        if Settings.shared.hideIdleFinder && !finder.hasWindows {
+            // Keep Finder only when it is the current app (e.g. you clicked the desktop).
+            mru = mru.enumerated().filter { $0.offset == 0 || !FinderWatch.isFinder($0.element) }.map(\.element)
+        }
+        mru = Array(mru.prefix(HintGrid.maxItems))
         guard !mru.isEmpty else { return false }
         plan = HintGrid.plan(count: mru.count)
         let s = Settings.shared
         let info = mru.map { AppInfo(id: AppTracker.id($0), name: $0.localizedName ?? "", uses: apps.uses($0)) }
-        let arrangement = Arranger.arrange(info, ordering: s.ordering, primary: plan.homeCount, stableRest: s.stableRest)
-        items = arrangement.slots.map { mru[$0] }
-        cycle = arrangement.cycle
-        selected = cycle[0]
+        items = Arranger.arrange(info, ordering: s.ordering, primary: plan.homeCount, stableRest: s.stableRest).map { mru[$0] }
+        selected = 0
         return true
     }
 
     private func show(reverse: Bool) {
+        finder.refresh()
         guard prepare() else { return }
-        if reverse { selected = cycle[max(cycle.count - 2, 0)] }
+        if reverse { selected = items.count - 1 }
         typed = []
         isVisible = true
         let delay = Settings.shared.showDelay
@@ -165,6 +175,7 @@ final class Switcher {
                          label: KeyMap.label(slot.keys), row: slot.row, col: slot.col)
         }
         window.show(entries, rows: plan.rows, cols: plan.cols, mode: mode, selected: selected)
+        if !quitting.isEmpty { refreshDim() }
         if previews {
             let shown = items
             thumbs.refresh(shown.map(\.processIdentifier)) { [weak self] pid in
@@ -178,13 +189,15 @@ final class Switcher {
 
     private func refreshDim() {
         let t = typed
-        window.dim { i in t.isEmpty || self.plan.slots[i].keys.starts(with: t) }
+        window.dim { i in
+            !self.quitting.contains(self.items[i].processIdentifier)
+                && (t.isEmpty || self.plan.slots[i].keys.starts(with: t))
+        }
     }
 
     private func move(_ delta: Int) {
-        guard !cycle.isEmpty else { return }
-        let pos = cycle.firstIndex(of: selected) ?? 0
-        selected = cycle[(pos + delta + cycle.count) % cycle.count]
+        guard !items.isEmpty else { return }
+        selected = (selected + delta + items.count) % items.count
         if pendingPresent == nil { window.select(selected) }
     }
 
@@ -202,10 +215,29 @@ final class Switcher {
         }
     }
 
+    /// Like the native switcher: quit the selected app and stay open; the grid re-renders once it's gone.
     private func quitSelected() {
         guard selected < items.count else { return }
-        items[selected].terminate()
-        hide()
+        let app = items[selected]
+        quitting.insert(app.processIdentifier)
+        app.terminate()
+        refreshDim()
+    }
+
+    /// Re-lays out the open switcher when an app launches or quits, keeping the selection where it makes sense.
+    private func appsChanged() {
+        guard isVisible || previewing else { return }
+        let previous = selected < items.count ? items[selected] : nil
+        let previousIndex = selected
+        quitting = quitting.filter { pid in items.contains { $0.processIdentifier == pid && !$0.isTerminated } }
+        guard prepare() else { hide(); endPreview(); return }
+        if let previous, !previous.isTerminated, let i = items.firstIndex(of: previous) {
+            selected = i
+        } else {
+            selected = min(previousIndex, items.count - 1)
+        }
+        typed = []
+        if pendingPresent == nil { present() }
     }
 
     // MARK: Finishing
@@ -219,6 +251,7 @@ final class Switcher {
 
     private func hide() {
         isVisible = false
+        quitting = []
         pendingPresent?.cancel()
         pendingPresent = nil
         typed = []

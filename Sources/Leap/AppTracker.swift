@@ -8,6 +8,8 @@ final class AppTracker {
     private(set) var usage: [String: Int] = UserDefaults.standard.dictionary(forKey: "usage") as? [String: Int] ?? [:]
     var onLaunch: ((NSRunningApplication) -> Void)?
     var onDeactivate: ((NSRunningApplication) -> Void)?
+    /// An app launched or quit.
+    var onChange: (() -> Void)?
 
     init() {
         seed()
@@ -29,11 +31,15 @@ final class AppTracker {
                 guard let self, Self.isSwitchable(app), !self.mru.contains(app) else { return }
                 self.mru.insert(app, at: min(1, self.mru.count))
                 self.onLaunch?(app)
+                self.onChange?()
             }
         }
         nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            MainActor.assumeIsolated { self?.mru.removeAll { $0 == app } }
+            MainActor.assumeIsolated {
+                self?.mru.removeAll { $0 == app }
+                self?.onChange?()
+            }
         }
     }
 

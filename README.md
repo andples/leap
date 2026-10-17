@@ -9,9 +9,10 @@ A fast ⌘Tab replacement for macOS with Vimium-style hint keys.
 - The grid sizes itself to the number of apps (`ceil(n/4)` rows) and mirrors the physical keys.
   Most recent app gets the home-row index finger; the current app goes last. Over 16 apps → two-key hints.
 - **Space** toggles Icons ⇄ Window Previews (remembered). **Arrows** move, **Return** switches,
-  **Esc** cancels, **Q** quits the selected app. Clicking a cell works too.
+  **Esc** cancels, **Q** quits the selected app (the switcher stays open and re-renders). Clicking a cell works too.
 - **Order**: the home row holds your most recent or most used apps (Settings). Everything else is
-  alphabetical so those keys stay put. Tab always starts at your previous app.
+  alphabetical so those keys stay put. Tab goes left to right: home row, then top, then bottom.
+- **Finder** only shows up when it has a window open (toggle in Settings).
 - **Settings… (⌘,)** in the menu bar: theme, size, background opacity, corner radius, app names,
   hint badge position/size/color, selection color, show delay. Changes preview live.
 - Switching to an app whose windows are all minimized restores one; an app with no windows gets reopened (like a Dock click).

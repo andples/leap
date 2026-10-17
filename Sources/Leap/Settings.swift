@@ -42,6 +42,7 @@ final class Settings: ObservableObject {
     @Published var showDelay: Double { didSet { d.set(showDelay, forKey: "showDelay") } }
     @Published var ordering: Ordering { didSet { d.set(ordering.rawValue, forKey: "ordering") } }
     @Published var stableRest: Bool { didSet { d.set(stableRest, forKey: "stableRest") } }
+    @Published var hideIdleFinder: Bool { didSet { d.set(hideIdleFinder, forKey: "hideIdleFinder") } }
 
     private init() {
         mode = Mode(rawValue: d.string(forKey: "mode") ?? "") ?? .icons
@@ -58,6 +59,7 @@ final class Settings: ObservableObject {
         showDelay = d.object(forKey: "showDelay") as? Double ?? 0
         ordering = Ordering(rawValue: d.string(forKey: "ordering") ?? "") ?? .recent
         stableRest = d.object(forKey: "stableRest") as? Bool ?? true
+        hideIdleFinder = d.object(forKey: "hideIdleFinder") as? Bool ?? true
     }
 
     var effectiveHighlight: NSColor { useAccentHighlight ? .controlAccentColor : highlightColor }
@@ -123,10 +125,11 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 Toggle("Keep other apps in alphabetical order", isOn: $s.stableRest)
+                Toggle("Hide Finder when no windows are open", isOn: $s.hideIdleFinder)
             } header: {
                 Text("Order")
             } footer: {
-                Text("Apps off the home row keep the same keys every time. Tab always starts at your previous app.")
+                Text("Apps off the home row keep the same keys every time. Tab goes left to right: home row, then top, then bottom.")
                     .foregroundStyle(.secondary)
             }
             Section("Background") {
