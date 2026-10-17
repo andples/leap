@@ -13,26 +13,28 @@ final class Switcher {
     private var items: [NSRunningApplication] = []
     private var plan = GridPlan.empty
     private var selected = 0
+    /// Item indices in Tab order.
+    private var cycle: [Int] = []
     private var typed: [KeyPos] = []
     private var swallowed = Set<Int64>()
     private(set) var isVisible = false
-
-    var onModeChange: (() -> Void)?
+    private var pendingPresent: DispatchWorkItem?
+    private var previewing = false
+    private var previewHide: DispatchWorkItem?
 
     var mode: Mode {
-        get { Mode(rawValue: UserDefaults.standard.string(forKey: "mode") ?? "") ?? .icons }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: "mode")
-            onModeChange?()
-        }
+        get { Settings.shared.mode }
+        set { Settings.shared.mode = newValue }
     }
 
     init(apps: AppTracker) {
         self.apps = apps
         icons.warm(apps.mru)
         window.onClick = { [weak self] i in
-            self?.selected = i
-            self?.commit()
+            guard let self else { return }
+            if self.previewing { self.endPreview(); return }
+            self.selected = i
+            self.commit()
         }
         apps.onLaunch = { [weak self] app in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = self?.icons.image(for: app) }
@@ -58,6 +60,7 @@ final class Switcher {
                 guard code == kVK_Tab, flags.contains(.maskCommand),
                       !flags.contains(.maskControl), !flags.contains(.maskAlternate) else { return false }
                 swallowed.insert(code)
+                endPreview()
                 show(reverse: flags.contains(.maskShift))
                 return true
             }
@@ -77,7 +80,11 @@ final class Switcher {
         case kVK_Tab: move(shift ? -1 : 1)
         case kVK_Escape: hide()
         case kVK_Return, kVK_ANSI_KeypadEnter: commit()
-        case kVK_Space: mode = mode == .icons ? .previews : .icons; present()
+        case kVK_Space:
+            mode = mode == .icons ? .previews : .icons
+            pendingPresent?.cancel()
+            pendingPresent = nil
+            present()
         case kVK_LeftArrow: moveSpatial(dx: -1, dy: 0)
         case kVK_RightArrow: moveSpatial(dx: 1, dy: 0)
         case kVK_UpArrow: moveSpatial(dx: 0, dy: -1)
@@ -114,15 +121,38 @@ final class Switcher {
 
     // MARK: Showing
 
+    /// Lays out the running apps: picks the grid, who gets the home row, and the Tab order.
+    @discardableResult
+    private func prepare() -> Bool {
+        let mru = Array(apps.current().prefix(HintGrid.maxItems))
+        guard !mru.isEmpty else { return false }
+        plan = HintGrid.plan(count: mru.count)
+        let s = Settings.shared
+        let info = mru.map { AppInfo(id: AppTracker.id($0), name: $0.localizedName ?? "", uses: apps.uses($0)) }
+        let arrangement = Arranger.arrange(info, ordering: s.ordering, primary: plan.homeCount, stableRest: s.stableRest)
+        items = arrangement.slots.map { mru[$0] }
+        cycle = arrangement.cycle
+        selected = cycle[0]
+        return true
+    }
+
     private func show(reverse: Bool) {
-        items = apps.switchOrder()
-        guard !items.isEmpty else { return }
-        plan = HintGrid.plan(count: items.count)
-        if items.count > plan.slots.count { items = Array(items.prefix(plan.slots.count)) }
-        selected = reverse ? max(items.count - 2, 0) : 0
+        guard prepare() else { return }
+        if reverse { selected = cycle[max(cycle.count - 2, 0)] }
         typed = []
         isVisible = true
-        present()
+        let delay = Settings.shared.showDelay
+        if delay > 0 {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.isVisible else { return }
+                self.pendingPresent = nil
+                self.present()
+            }
+            pendingPresent = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay / 1000, execute: work)
+        } else {
+            present()
+        }
     }
 
     private func present() {
@@ -152,9 +182,10 @@ final class Switcher {
     }
 
     private func move(_ delta: Int) {
-        guard !items.isEmpty else { return }
-        selected = (selected + delta + items.count) % items.count
-        window.select(selected)
+        guard !cycle.isEmpty else { return }
+        let pos = cycle.firstIndex(of: selected) ?? 0
+        selected = cycle[(pos + delta + cycle.count) % cycle.count]
+        if pendingPresent == nil { window.select(selected) }
     }
 
     private func moveSpatial(dx: Int, dy: Int) {
@@ -188,21 +219,42 @@ final class Switcher {
 
     private func hide() {
         isVisible = false
+        pendingPresent?.cancel()
+        pendingPresent = nil
         typed = []
         window.hide()
         icons.prune(keeping: apps.mru)
         thumbs.prune(keeping: apps.mru)
     }
 
+    // MARK: Live preview
+
+    /// Shows the switcher without taking over the keyboard, so appearance changes can be seen as they're made.
+    func livePreview() {
+        guard !isVisible else { return }
+        guard prepare() else { return }
+        previewing = true
+        present()
+        previewHide?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.endPreview() }
+        previewHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    private func endPreview() {
+        guard previewing else { return }
+        previewing = false
+        previewHide?.cancel()
+        previewHide = nil
+        window.hide()
+    }
+
     // MARK: Debug
 
     /// Renders the switcher for the current apps into a PNG (no permissions needed).
     func snapshot(to path: String, mode m: Mode) {
-        UserDefaults.standard.set(m.rawValue, forKey: "mode")
-        items = apps.switchOrder()
-        plan = HintGrid.plan(count: items.count)
-        items = Array(items.prefix(plan.slots.count))
-        selected = 0
+        Settings.shared.mode = m
+        prepare()
         isVisible = true
         present()
         let view = window.contentView

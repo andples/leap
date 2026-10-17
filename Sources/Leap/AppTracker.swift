@@ -4,6 +4,8 @@ import AppKit
 @MainActor
 final class AppTracker {
     private(set) var mru: [NSRunningApplication] = []
+    /// All-time activation counts by bundle ID.
+    private(set) var usage: [String: Int] = UserDefaults.standard.dictionary(forKey: "usage") as? [String: Int] ?? [:]
     var onLaunch: ((NSRunningApplication) -> Void)?
     var onDeactivate: ((NSRunningApplication) -> Void)?
 
@@ -12,7 +14,10 @@ final class AppTracker {
         let nc = NSWorkspace.shared.notificationCenter
         nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            MainActor.assumeIsolated { self?.bringToFront(app) }
+            MainActor.assumeIsolated {
+                self?.bringToFront(app)
+                self?.countUse(app)
+            }
         }
         nc.addObserver(forName: NSWorkspace.didDeactivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
@@ -36,15 +41,26 @@ final class AppTracker {
         app.activationPolicy == .regular && app.processIdentifier != getpid() && !app.isTerminated
     }
 
-    /// Switch order: previous app first, current app last.
-    func switchOrder() -> [NSRunningApplication] {
+    static func id(_ app: NSRunningApplication) -> String {
+        app.bundleIdentifier ?? "pid:\(app.processIdentifier)"
+    }
+
+    func uses(_ app: NSRunningApplication) -> Int { usage[Self.id(app)] ?? 0 }
+
+    private func countUse(_ app: NSRunningApplication) {
+        guard Self.isSwitchable(app), let id = app.bundleIdentifier else { return }
+        usage[id, default: 0] += 1
+        UserDefaults.standard.set(usage, forKey: "usage")
+    }
+
+    /// Running apps, most recent first; index 0 is the current app.
+    func current() -> [NSRunningApplication] {
         mru.removeAll { $0.isTerminated || $0.activationPolicy != .regular }
         for app in NSWorkspace.shared.runningApplications where Self.isSwitchable(app) && !mru.contains(app) {
             mru.append(app)
         }
         if let front = NSWorkspace.shared.frontmostApplication, Self.isSwitchable(front) { bringToFront(front) }
-        guard mru.count > 1 else { return mru }
-        return Array(mru.dropFirst()) + [mru[0]]
+        return mru
     }
 
     private func bringToFront(_ app: NSRunningApplication) {

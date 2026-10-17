@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Carbon.HIToolbox
 import ServiceManagement
 
@@ -9,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tap: KeyTap?
     private var statusItem: NSStatusItem!
     private var permissionTimer: Timer?
+    private let settingsWindow = SettingsWindow()
+    private var settingsChanged: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
@@ -19,7 +22,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupStatusItem()
-        switcher.onModeChange = { [weak self] in self?.rebuildMenu() }
+        // objectWillChange fires before the new value lands, so react on the next runloop turn.
+        settingsChanged = Settings.shared.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.rebuildMenu()
+                if self.settingsWindow.isVisible { self.switcher.livePreview() }
+            }
+        }
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main
         ) { _ in MainActor.assumeIsolated { KeyMap.invalidate() } }
@@ -83,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item("Grant Screen Recording (for previews)…", #selector(requestScreen)))
         }
         menu.addItem(.separator())
+        menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         let login = item("Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
@@ -97,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return i
     }
 
+    @objc private func openSettings() { settingsWindow.show() }
     @objc private func setIcons() { switcher.mode = .icons }
     @objc private func setPreviews() {
         switcher.mode = .previews

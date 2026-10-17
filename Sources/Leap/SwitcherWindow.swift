@@ -32,13 +32,34 @@ struct Metrics {
         }
     }
 
-    func scaled(_ s: CGFloat) -> Metrics {
-        guard s < 1 else { return self }
-        return Metrics(cellW: cellW * s, cellH: cellH * s, gap: gap * s, pad: pad * s, corner: corner * s,
-                       icon: icon * s, smallIcon: smallIcon * s, thumbH: thumbH * s, inset: inset * s,
-                       nameFont: max(nameFont * s, 9), nameH: max(nameH * s, 12),
-                       badgeFont: max(badgeFont * s, 11), badgeH: max(badgeH * s, 17))
+    /// Base metrics adjusted for the user's appearance settings.
+    @MainActor static func styled(_ mode: Mode, _ s: Settings) -> Metrics {
+        var m = base(mode).scaled(s.scale)
+        m.badgeFont *= s.badgeScale
+        m.badgeH *= s.badgeScale
+        if !s.showNames { m.cellH -= m.nameH + 4 }
+        return m
     }
+
+    func scaled(_ s: CGFloat) -> Metrics {
+        Metrics(cellW: cellW * s, cellH: cellH * s, gap: gap * s, pad: pad * s, corner: corner * s,
+                icon: icon * s, smallIcon: smallIcon * s, thumbH: thumbH * s, inset: inset * s,
+                nameFont: max(nameFont * s, 9), nameH: max(nameH * s, 12),
+                badgeFont: max(badgeFont * s, 10), badgeH: max(badgeH * s, 16))
+    }
+}
+
+/// Colors resolved once per show from settings and the effective appearance.
+struct Style {
+    let dark: Bool
+    let showNames: Bool
+    let badgePosition: BadgePosition
+    let badgeColor: CGColor
+    let badgeBorder: CGColor
+    let badgeText: CGColor
+    let highlight: CGColor
+    let selectedFill: CGColor
+    let nameColor: CGColor
 }
 
 private final class Panel: NSPanel {
@@ -50,10 +71,14 @@ private final class Panel: NSPanel {
 @MainActor
 final class SwitcherWindow {
     private let panel: Panel
+    private let effect = NSVisualEffectView()
+    private let tint = CALayer()
     private let grid = GridView()
     private var cells: [CellLayer] = []
     private var mode: Mode = .icons
     private var metrics = Metrics.base(.icons)
+    private var style: Style?
+    private var maskRadius: CGFloat = -1
     private var entries: [Entry] = []
     var onClick: ((Int) -> Void)? {
         get { grid.onClick }
@@ -71,14 +96,12 @@ final class SwitcherWindow {
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        panel.appearance = NSAppearance(named: .darkAqua)
 
-        let effect = NSVisualEffectView()
-        effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
-        effect.maskImage = Self.roundedMask(radius: 20)
+        effect.wantsLayer = true
         panel.contentView = effect
+        effect.layer?.addSublayer(tint)
 
         grid.frame = effect.bounds
         grid.autoresizingMask = [.width, .height]
@@ -90,21 +113,27 @@ final class SwitcherWindow {
     func show(_ entries: [Entry], rows: Int, cols: Int, mode: Mode, selected: Int) {
         self.entries = entries
         self.mode = mode
+        let settings = Settings.shared
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
-        var m = Metrics.base(mode)
+        applyAppearance(settings)
+
+        var m = Metrics.styled(mode, settings)
         func size(_ m: Metrics) -> CGSize {
             CGSize(width: CGFloat(cols) * m.cellW + CGFloat(max(cols - 1, 0)) * m.gap + 2 * m.pad,
                    height: CGFloat(rows) * m.cellH + CGFloat(max(rows - 1, 0)) * m.gap + 2 * m.pad)
         }
         let raw = size(m)
         let fit = screen.visibleFrame
-        m = m.scaled(min(fit.width * 0.94 / raw.width, fit.height * 0.94 / raw.height))
+        let shrink = min(fit.width * 0.94 / raw.width, fit.height * 0.94 / raw.height)
+        if shrink < 1 { m = m.scaled(shrink) }
         metrics = m
         let s = size(m)
         let scale = screen.backingScaleFactor
+        let style = self.style!
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        tint.frame = CGRect(origin: .zero, size: s)
         while cells.count < entries.count {
             let c = CellLayer()
             grid.layer!.addSublayer(c)
@@ -119,8 +148,8 @@ final class SwitcherWindow {
         }
         for (i, e) in entries.enumerated() {
             cells[i].frame = grid.cellFrames[i]
-            cells[i].apply(e, mode: mode, m: m, scale: scale)
-            cells[i].setSelected(i == selected)
+            cells[i].apply(e, mode: mode, m: m, style: style, scale: scale)
+            cells[i].setSelected(i == selected, style)
             cells[i].opacity = 1
         }
         CATransaction.commit()
@@ -130,10 +159,42 @@ final class SwitcherWindow {
         panel.orderFrontRegardless()
     }
 
+    private func applyAppearance(_ s: Settings) {
+        switch s.theme {
+        case .system: panel.appearance = nil
+        case .dark: panel.appearance = NSAppearance(named: .darkAqua)
+        case .light: panel.appearance = NSAppearance(named: .aqua)
+        }
+        let dark = panel.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        effect.material = dark ? .hudWindow : .popover
+        tint.backgroundColor = (dark ? NSColor(white: 0.11, alpha: 1) : NSColor(white: 0.95, alpha: 1)).cgColor
+        tint.opacity = Float(s.opacity)
+
+        let radius = CGFloat(s.cornerRadius)
+        if radius != maskRadius {
+            maskRadius = radius
+            effect.maskImage = radius > 0 ? Self.roundedMask(radius: radius) : nil
+        }
+
+        let badge = s.badgeColor
+        style = Style(
+            dark: dark,
+            showNames: s.showNames,
+            badgePosition: s.badgePosition,
+            badgeColor: badge.cgColor,
+            badgeBorder: (badge.blended(withFraction: 0.3, of: .black) ?? badge).cgColor,
+            badgeText: badge.contrastingText.cgColor,
+            highlight: s.effectiveHighlight.cgColor,
+            selectedFill: (dark ? NSColor(white: 1, alpha: 0.16) : NSColor(white: 0, alpha: 0.10)).cgColor,
+            nameColor: (dark ? NSColor(white: 1, alpha: 0.88) : NSColor(white: 0, alpha: 0.82)).cgColor
+        )
+    }
+
     func select(_ index: Int) {
+        guard let style else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for (i, c) in cells.enumerated() where !c.isHidden { c.setSelected(i == index) }
+        for (i, c) in cells.enumerated() where !c.isHidden { c.setSelected(i == index, style) }
         CATransaction.commit()
     }
 
@@ -145,12 +206,12 @@ final class SwitcherWindow {
     }
 
     func updateThumb(_ index: Int, _ image: CGImage) {
-        guard index < entries.count, mode == .previews else { return }
+        guard index < entries.count, mode == .previews, let style else { return }
         let e = entries[index]
         entries[index] = Entry(name: e.name, icon: e.icon, thumb: image, label: e.label, row: e.row, col: e.col)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cells[index].apply(entries[index], mode: mode, m: metrics, scale: panel.screen?.backingScaleFactor ?? 2)
+        cells[index].apply(entries[index], mode: mode, m: metrics, style: style, scale: panel.screen?.backingScaleFactor ?? 2)
         CATransaction.commit()
     }
 
@@ -197,54 +258,55 @@ private final class CellLayer: CALayer {
     override init() {
         super.init()
         cornerRadius = 12
-        borderColor = NSColor.controlAccentColor.cgColor
         thumb.cornerRadius = 6
         thumb.masksToBounds = true
         thumb.contentsGravity = .resize
         thumb.borderWidth = 0.5
-        thumb.borderColor = NSColor(white: 1, alpha: 0.15).cgColor
+        thumb.borderColor = NSColor(white: 0.5, alpha: 0.3).cgColor
         icon.contentsGravity = .resizeAspect
         icon.minificationFilter = .trilinear
-        badge.backgroundColor = NSColor(red: 1.0, green: 0.85, blue: 0.30, alpha: 1).cgColor
-        badge.borderColor = NSColor(red: 0.78, green: 0.62, blue: 0.0, alpha: 1).cgColor
         badge.borderWidth = 1
         badge.cornerRadius = 5
         badge.shadowOpacity = 0.35
         badge.shadowRadius = 2
         badge.shadowOffset = CGSize(width: 0, height: -1)
         badgeText.alignmentMode = .center
-        badgeText.foregroundColor = NSColor(white: 0.08, alpha: 1).cgColor
         nameText.alignmentMode = .center
         nameText.truncationMode = .end
-        nameText.foregroundColor = NSColor(white: 1, alpha: 0.88).cgColor
         for l in [thumb, icon, nameText, badge] { addSublayer(l) }
         badge.addSublayer(badgeText)
     }
     override init(layer: Any) { super.init(layer: layer) }
     required init?(coder: NSCoder) { fatalError() }
 
-    func setSelected(_ on: Bool) {
-        backgroundColor = on ? NSColor(white: 1, alpha: 0.16).cgColor : nil
+    func setSelected(_ on: Bool, _ style: Style) {
+        backgroundColor = on ? style.selectedFill : nil
+        borderColor = style.highlight
         borderWidth = on ? 2 : 0
     }
 
-    func apply(_ e: Entry, mode: Mode, m: Metrics, scale: CGFloat) {
+    func apply(_ e: Entry, mode: Mode, m: Metrics, style: Style, scale: CGFloat) {
         for l in [self, thumb, icon, badge, badgeText, nameText] as [CALayer] { l.contentsScale = scale }
         cornerRadius = m.corner
         let w = bounds.width, h = bounds.height
 
+        nameText.isHidden = !style.showNames
         nameText.string = e.name
         nameText.font = NSFont.systemFont(ofSize: m.nameFont, weight: .medium)
         nameText.fontSize = m.nameFont
+        nameText.foregroundColor = style.nameColor
         nameText.frame = CGRect(x: 6, y: m.inset, width: w - 12, height: m.nameH)
-        let contentBottom = m.inset + m.nameH + 4
+        let contentBottom = style.showNames ? m.inset + m.nameH + 4 : m.inset
 
+        // The rect the badge anchors to in "On Icon" mode.
+        var focus: CGRect
         icon.contents = e.icon
         switch mode {
         case .icons:
             thumb.isHidden = true
             icon.frame = CGRect(x: (w - m.icon) / 2, y: contentBottom + (h - contentBottom - m.inset - m.icon) / 2,
                                 width: m.icon, height: m.icon)
+            focus = icon.frame
         case .previews:
             let area = CGRect(x: m.inset, y: contentBottom, width: w - 2 * m.inset, height: h - contentBottom - m.inset)
             if let t = e.thumb {
@@ -256,18 +318,32 @@ private final class CellLayer: CALayer {
                 let tr = CGRect(x: area.midX - tw / 2, y: area.midY - th / 2, width: tw, height: th)
                 thumb.frame = tr
                 icon.frame = CGRect(x: max(tr.minX - 6, 2), y: max(tr.minY - 6, 2), width: m.smallIcon, height: m.smallIcon)
+                focus = tr
             } else {
                 thumb.isHidden = true
                 icon.frame = CGRect(x: area.midX - m.icon / 2, y: area.midY - m.icon / 2, width: m.icon, height: m.icon)
+                focus = icon.frame
             }
         }
 
+        badge.backgroundColor = style.badgeColor
+        badge.borderColor = style.badgeBorder
+        badge.cornerRadius = m.badgeH * 0.23
+        badgeText.foregroundColor = style.badgeText
         badgeText.string = e.label
         badgeText.font = NSFont.monospacedSystemFont(ofSize: m.badgeFont, weight: .bold)
         badgeText.fontSize = m.badgeFont
-        let bw = max(m.badgeH, CGFloat(e.label.count) * m.badgeFont * 0.62 + 10)
-        badge.frame = CGRect(x: 6, y: h - 6 - m.badgeH, width: bw, height: m.badgeH)
+        let bw = max(m.badgeH, CGFloat(e.label.count) * m.badgeFont * 0.62 + m.badgeH * 0.45)
+        let bh = m.badgeH
+        switch style.badgePosition {
+        case .topLeft:
+            badge.frame = CGRect(x: 6, y: h - 6 - bh, width: bw, height: bh)
+        case .topRight:
+            badge.frame = CGRect(x: w - 6 - bw, y: h - 6 - bh, width: bw, height: bh)
+        case .onIcon:
+            badge.frame = CGRect(x: focus.midX - bw / 2, y: max(focus.minY - bh * 0.35, 2), width: bw, height: bh)
+        }
         let lineH = (m.badgeFont * 1.22).rounded()
-        badgeText.frame = CGRect(x: 0, y: (m.badgeH - lineH) / 2, width: bw, height: lineH)
+        badgeText.frame = CGRect(x: 0, y: (bh - lineH) / 2, width: bw, height: lineH)
     }
 }
