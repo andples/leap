@@ -93,10 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Menu bar
 
     private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        // Match the size of the system's own menu bar icons (symbols default to a smaller size).
-        statusItem.button?.image = NSImage(systemSymbolName: "square.grid.3x3.fill", accessibilityDescription: "Leap")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.image = menuBarIcon("square.grid.3x3.fill", description: "Leap")
         rebuildMenu()
     }
 
@@ -153,4 +151,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
     @objc private func quit() { NSApp.terminate(nil) }
+}
+
+/// Menu bar icon drawn the way most apps do (Claude, for one): a ~16pt template glyph centred on a 24pt canvas,
+/// shown in a variable-length status item so the system supplies the standard spacing.
+func menuBarIcon(_ symbol: String, description: String) -> NSImage? {
+    guard let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: description) else { return nil }
+    let canvas = NSSize(width: 24, height: 24), box: CGFloat = 20 // symbol images carry ~20% padding: this gives a ~16pt glyph
+    let s = box / max(glyph.size.width, glyph.size.height, 1)
+    let size = NSSize(width: glyph.size.width * s, height: glyph.size.height * s)
+    let image = NSImage(size: canvas, flipped: false) { _ in
+        glyph.draw(in: NSRect(x: (canvas.width - size.width) / 2, y: (canvas.height - size.height) / 2,
+                              width: size.width, height: size.height))
+        return true
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = description
+    return image
 }
