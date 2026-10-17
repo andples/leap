@@ -43,6 +43,7 @@ final class Settings: ObservableObject {
     @Published var ordering: Ordering { didSet { d.set(ordering.rawValue, forKey: "ordering") } }
     @Published var stableRest: Bool { didSet { d.set(stableRest, forKey: "stableRest") } }
     @Published var hideIdleFinder: Bool { didSet { d.set(hideIdleFinder, forKey: "hideIdleFinder") } }
+    @Published var holdToPeek: Bool { didSet { d.set(holdToPeek, forKey: "holdToPeek") } }
 
     private init() {
         mode = Mode(rawValue: d.string(forKey: "mode") ?? "") ?? .icons
@@ -60,6 +61,7 @@ final class Settings: ObservableObject {
         ordering = Ordering(rawValue: d.string(forKey: "ordering") ?? "") ?? .recent
         stableRest = d.object(forKey: "stableRest") as? Bool ?? true
         hideIdleFinder = d.object(forKey: "hideIdleFinder") as? Bool ?? true
+        holdToPeek = d.object(forKey: "holdToPeek") as? Bool ?? true
     }
 
     var effectiveHighlight: NSColor { useAccentHighlight ? .controlAccentColor : highlightColor }
@@ -152,10 +154,12 @@ struct SettingsView: View {
             }
             Section {
                 slider("Show delay", $s.showDelay, 0...300, step: 10, format: { $0 == 0 ? "Instant" : "\(Int($0)) ms" })
+                Toggle("Hold a hint key to preview", isOn: $s.holdToPeek)
             } header: {
                 Text("Behavior")
             } footer: {
-                Text("A short delay hides the panel on a quick ⌘Tab flick.").foregroundStyle(.secondary)
+                Text("A short delay hides the panel on a quick ⌘Tab flick. With hold to preview, tapping a hint key switches when you release it; holding it shows a preview, and Q while holding quits that app. Turn it off to switch the instant a key goes down.")
+                    .foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()

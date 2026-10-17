@@ -23,6 +23,8 @@ enum KeyMap {
 
     private static var labels: [CGKeyCode: String] = [:]
 
+    static func isArrow(_ code: CGKeyCode) -> Bool { (123...126).contains(Int(code)) }
+
     /// Call when the keyboard layout changes.
     static func invalidate() { labels.removeAll() }
 

@@ -12,6 +12,8 @@ A fast ⌘Tab replacement for macOS with Vimium-style hint keys.
   **Esc** cancels, **Q** quits the selected app (the switcher stays open and re-renders). Clicking a cell works too.
 - **Order**: the home row holds your most recent or most used apps (Settings). Everything else is
   alphabetical so those keys stay put. Tab goes left to right: home row, then top, then bottom.
+- **Hold a hint key** to peek: a larger window preview pops up and the app stays selected; **Q** while holding quits it. A tap still switches (on key release; turn hold-to-preview off in Settings to switch on key press).
+- A quick ⌘Tab always lands on your previous app, so flicking swaps between your last two apps.
 - **Finder** only shows up when it has a window open (toggle in Settings).
 - **Settings… (⌘,)** in the menu bar: theme, size, background opacity, corner radius, app names,
   hint badge position/size/color, selection color, show delay. Changes preview live.

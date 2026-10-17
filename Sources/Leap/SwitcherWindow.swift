@@ -219,9 +219,148 @@ final class SwitcherWindow {
         CATransaction.commit()
     }
 
-    func hide() { panel.orderOut(nil) }
+    func hide() {
+        hidePeek()
+        panel.orderOut(nil)
+    }
+
+    // MARK: Peek (hold a hint key)
+
+    private lazy var peek = PeekPanel()
+    private var peekIndex = 0
+
+    func showPeek(index: Int, image: CGImage?, icon: CGImage?, name: String) {
+        guard index < grid.cellFrames.count else { return }
+        peekIndex = index
+        peek.appearance = panel.appearance
+        peek.configure(image: image, icon: icon, name: name, dark: style?.dark ?? true,
+                       radius: CGFloat(Settings.shared.cornerRadius), scale: panel.screen?.backingScaleFactor ?? 2)
+        place()
+        peek.orderFrontRegardless()
+    }
+
+    var peekView: NSView { peek.contentView! }
+
+    func updatePeek(_ image: CGImage) {
+        guard peek.isVisible else { return }
+        peek.setImage(image)
+        place()
+    }
+
+    func hidePeek() {
+        if peek.isVisible { peek.orderOut(nil) }
+    }
+
+    /// Above the switcher, centered on the held cell; below it if there's no room; over the cell as a last resort.
+    private func place() {
+        guard let screen = panel.screen?.visibleFrame else { return }
+        let size = peek.frame.size
+        let cell = grid.cellFrames[peekIndex].offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
+        var x = cell.midX - size.width / 2
+        x = min(max(x, screen.minX + 8), screen.maxX - size.width - 8)
+        var y: CGFloat
+        if panel.frame.maxY + 12 + size.height <= screen.maxY {
+            y = panel.frame.maxY + 12
+        } else if panel.frame.minY - 12 - size.height >= screen.minY {
+            y = panel.frame.minY - 12 - size.height
+        } else {
+            y = min(max(cell.midY - size.height / 2, screen.minY + 8), screen.maxY - size.height - 8)
+        }
+        peek.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
+    }
 
     private static func roundedMask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let img = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        img.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        img.resizingMode = .stretch
+        return img
+    }
+}
+
+/// The larger preview shown while a hint key is held.
+private final class PeekPanel: NSPanel {
+    private let effect = NSVisualEffectView()
+    private let image = CALayer()
+    private let nameText = CATextLayer()
+    private var icon: CGImage?
+    private var name = ""
+    private var dark = true
+    private var radius: CGFloat = 20
+    private let pad: CGFloat = 12
+    private let nameH: CGFloat = 20
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        hidesOnDeactivate = false
+        animationBehavior = .none
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        ignoresMouseEvents = true
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        contentView = effect
+        image.contentsGravity = .resize
+        image.masksToBounds = true
+        image.cornerRadius = 8
+        image.minificationFilter = .trilinear
+        nameText.alignmentMode = .center
+        nameText.truncationMode = .end
+        nameText.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        nameText.fontSize = 13
+        effect.layer?.addSublayer(image)
+        effect.layer?.addSublayer(nameText)
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    func configure(image img: CGImage?, icon: CGImage?, name: String, dark: Bool, radius: CGFloat, scale: CGFloat) {
+        self.icon = icon
+        self.name = name
+        self.dark = dark
+        self.radius = max(radius, 8)
+        effect.material = dark ? .hudWindow : .popover
+        effect.maskImage = Self.mask(self.radius)
+        for l in [image, nameText] { l.contentsScale = scale }
+        nameText.foregroundColor = (dark ? NSColor(white: 1, alpha: 0.92) : NSColor(white: 0, alpha: 0.85)).cgColor
+        nameText.string = name
+        setImage(img)
+    }
+
+    /// Window thumbnail when we have one, otherwise the big app icon.
+    func setImage(_ img: CGImage?) {
+        let content: CGSize
+        if let img {
+            let w = CGFloat(img.width) / 2, h = CGFloat(img.height) / 2
+            let s = min(520 / w, 340 / h, 1)
+            content = CGSize(width: (w * s).rounded(), height: (h * s).rounded())
+            image.contents = img
+            image.contentsGravity = .resize
+        } else {
+            content = CGSize(width: 160, height: 160)
+            image.contents = icon
+            image.contentsGravity = .resizeAspect
+        }
+        let size = CGSize(width: max(content.width + 2 * pad, 200), height: content.height + 2 * pad + nameH)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        setContentSize(size)
+        image.frame = CGRect(x: (size.width - content.width) / 2, y: pad + nameH, width: content.width, height: content.height)
+        nameText.frame = CGRect(x: pad, y: pad - 2, width: size.width - 2 * pad, height: nameH)
+        CATransaction.commit()
+    }
+
+    private static func mask(_ radius: CGFloat) -> NSImage {
         let edge = radius * 2 + 1
         let img = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
             NSColor.black.setFill()

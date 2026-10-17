@@ -22,6 +22,11 @@ final class Switcher {
     private var pendingPresent: DispatchWorkItem?
     private var previewing = false
     private var previewHide: DispatchWorkItem?
+    /// A hint key that's still down: tap switches, hold peeks.
+    private var held: (code: CGKeyCode, index: Int)?
+    private var holdTimer: DispatchWorkItem?
+    private var peeking = false
+    private static let holdDelay = 0.22
 
     var mode: Mode {
         get { Settings.shared.mode }
@@ -71,10 +76,14 @@ final class Switcher {
                 return true
             }
             swallowed.insert(code)
+            let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            // Holding a hint key (or Q) must not re-trigger it.
+            if isRepeat && code != kVK_Tab && !KeyMap.isArrow(CGKeyCode(code)) { return true }
             key(CGKeyCode(code), shift: flags.contains(.maskShift))
             return true
         case .keyUp:
             let code = event.getIntegerValueField(.keyboardEventKeycode)
+            if let h = held, Int64(h.code) == code { releaseHeld() }
             return swallowed.remove(code) != nil
         default:
             return false
@@ -82,6 +91,15 @@ final class Switcher {
     }
 
     private func key(_ code: CGKeyCode, shift: Bool) {
+        if held != nil {
+            // Q while holding a hint key quits that app; any other key just drops the hold.
+            if KeyMap.character(code)?.lowercased() == "q" {
+                cancelHold()
+                quitSelected()
+                return
+            }
+            cancelHold()
+        }
         switch Int(code) {
         case kVK_Tab: move(shift ? -1 : 1)
         case kVK_Escape: hide()
@@ -99,14 +117,14 @@ final class Switcher {
             if !typed.isEmpty { typed.removeLast(); refreshDim() }
         default:
             if let pos = KeyMap.positions[code] {
-                hint(pos)
+                hint(pos, code: code)
             } else if KeyMap.character(code)?.lowercased() == "q" {
                 quitSelected()
             }
         }
     }
 
-    private func hint(_ pos: KeyPos) {
+    private func hint(_ pos: KeyPos, code: CGKeyCode) {
         typed.append(pos)
         var result = HintGrid.match(typed, in: plan)
         if result == .none, typed.count > 1 {
@@ -116,12 +134,63 @@ final class Switcher {
         switch result {
         case .exact(let i):
             selected = i
-            commit()
+            if Settings.shared.holdToPeek {
+                beginHold(code: code, index: i)
+            } else {
+                commit()
+            }
         case .prefix:
             refreshDim()
         case .none:
             typed = []
             refreshDim()
+        }
+    }
+
+    // MARK: Hold to peek
+
+    private func beginHold(code: CGKeyCode, index: Int) {
+        typed = []
+        refreshDim()
+        if pendingPresent == nil { window.select(index) }
+        held = (code, index)
+        let work = DispatchWorkItem { [weak self] in self?.startPeek() }
+        holdTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDelay, execute: work)
+    }
+
+    /// Key released: a quick tap switches, the end of a hold just closes the peek and keeps the selection.
+    private func releaseHeld() {
+        let wasPeeking = peeking
+        cancelHold()
+        if !wasPeeking { commit() }
+    }
+
+    private func cancelHold() {
+        holdTimer?.cancel()
+        holdTimer = nil
+        held = nil
+        if peeking {
+            peeking = false
+            window.hidePeek()
+        }
+    }
+
+    private func startPeek() {
+        guard let h = held, isVisible, h.index < items.count else { return }
+        if pendingPresent != nil {
+            pendingPresent?.cancel()
+            pendingPresent = nil
+            present()
+        }
+        peeking = true
+        let app = items[h.index]
+        let pid = app.processIdentifier
+        window.showPeek(index: h.index, image: thumbs.images[pid], icon: icons.image(for: app), name: app.localizedName ?? "")
+        thumbs.refresh([pid]) { [weak self] updated in
+            guard let self, self.peeking, let h = self.held, h.index < self.items.count,
+                  self.items[h.index].processIdentifier == updated, let img = self.thumbs.images[updated] else { return }
+            self.window.updatePeek(img)
         }
     }
 
@@ -141,7 +210,8 @@ final class Switcher {
         let s = Settings.shared
         let info = mru.map { AppInfo(id: AppTracker.id($0), name: $0.localizedName ?? "", uses: apps.uses($0)) }
         items = Arranger.arrange(info, ordering: s.ordering, primary: plan.homeCount, stableRest: s.stableRest).map { mru[$0] }
-        selected = 0
+        // Start on the previous app wherever it landed, so a quick ⌘Tab always swaps between the last two apps.
+        selected = mru.count > 1 ? items.firstIndex(of: mru[1]) ?? 0 : 0
         return true
     }
 
@@ -250,6 +320,7 @@ final class Switcher {
     }
 
     private func hide() {
+        cancelHold()
         isVisible = false
         quitting = []
         pendingPresent?.cancel()
@@ -290,7 +361,17 @@ final class Switcher {
         prepare()
         isVisible = true
         present()
-        let view = window.contentView
+        render(window.contentView, to: path)
+        if selected < items.count {
+            let app = items[selected]
+            window.showPeek(index: selected, image: thumbs.images[app.processIdentifier], icon: icons.image(for: app),
+                            name: app.localizedName ?? "")
+            render(window.peekView, to: path.replacingOccurrences(of: ".png", with: "-peek.png"))
+        }
+        hide()
+    }
+
+    private func render(_ view: NSView, to path: String) {
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         let out = NSImage(size: view.bounds.size)
@@ -302,6 +383,5 @@ final class Switcher {
         if let tiff = out.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
             try? png.write(to: URL(fileURLWithPath: path))
         }
-        hide()
     }
 }

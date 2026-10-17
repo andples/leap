@@ -85,7 +85,7 @@ final class ThumbnailCache {
     private nonisolated static func shoot(_ window: SCWindow) async throws -> CGImage {
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
-        let maxW = 560.0, maxH = 360.0
+        let maxW = 1040.0, maxH = 680.0
         let s = min(maxW / max(window.frame.width, 1), maxH / max(window.frame.height, 1), 2)
         config.width = max(Int(window.frame.width * s), 1)
         config.height = max(Int(window.frame.height * s), 1)
