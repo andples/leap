@@ -325,6 +325,9 @@ private final class PeekPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     func configure(image img: CGImage?, icon: CGImage?, name: String, dark: Bool, radius: CGFloat, scale: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         self.icon = icon
         self.name = name
         self.dark = dark
@@ -338,7 +341,10 @@ private final class PeekPanel: NSPanel {
     }
 
     /// Window thumbnail when we have one, otherwise the big app icon.
+    /// Contents, gravity and frames change in one non-animated transaction so nothing is ever drawn stretched.
     func setImage(_ img: CGImage?) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         let content: CGSize
         if let img {
             let w = CGFloat(img.width) / 2, h = CGFloat(img.height) / 2
@@ -352,8 +358,6 @@ private final class PeekPanel: NSPanel {
             image.contentsGravity = .resizeAspect
         }
         let size = CGSize(width: max(content.width + 2 * pad, 200), height: content.height + 2 * pad + nameH)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         setContentSize(size)
         image.frame = CGRect(x: (size.width - content.width) / 2, y: pad + nameH, width: content.width, height: content.height)
         nameText.frame = CGRect(x: pad, y: pad - 2, width: size.width - 2 * pad, height: nameH)

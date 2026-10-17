@@ -26,6 +26,9 @@ final class Switcher {
     private var held: (code: CGKeyCode, index: Int)?
     private var holdTimer: DispatchWorkItem?
     private var peeking = false
+    /// Whether the peek panel is actually on screen (it may be waiting briefly for a capture).
+    private var peekShown = false
+    private var peekFallback: DispatchWorkItem?
     private static let holdDelay = 0.22
 
     var mode: Mode {
@@ -45,6 +48,7 @@ final class Switcher {
         apps.onLaunch = { [weak self] app in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = self?.icons.image(for: app) }
         }
+        thumbs.onUpdate = { [weak self] pid in self?.thumbUpdated(pid) }
         apps.onChange = { [weak self] in self?.appsChanged() }
         finder.onChange = { [weak self] in self?.appsChanged() }
         finder.refresh()
@@ -52,8 +56,8 @@ final class Switcher {
             // Windows usually get closed while their app is active, so re-check Finder on every switch.
             self?.finder.refresh()
             // Keep previews warm: grab the window of the app we're leaving while it is still on screen.
-            guard let self, self.mode == .previews, !self.isVisible else { return }
-            self.thumbs.refresh([app.processIdentifier]) { _ in }
+            guard let self, self.wantsThumbs, !self.isVisible else { return }
+            self.thumbs.refresh([app.processIdentifier])
         }
     }
 
@@ -169,9 +173,12 @@ final class Switcher {
     private func cancelHold() {
         holdTimer?.cancel()
         holdTimer = nil
+        peekFallback?.cancel()
+        peekFallback = nil
         held = nil
         if peeking {
             peeking = false
+            peekShown = false
             window.hidePeek()
         }
     }
@@ -184,13 +191,37 @@ final class Switcher {
             present()
         }
         peeking = true
+        let pid = items[h.index].processIdentifier
+        let capturing = thumbs.refresh([pid]).contains(pid) || thumbs.isCapturing(pid)
+        if thumbs.images[pid] != nil || !capturing {
+            showPeekNow()
+        } else {
+            // A capture is on its way: wait a moment for it rather than flashing the icon first.
+            let work = DispatchWorkItem { [weak self] in self?.showPeekNow() }
+            peekFallback = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        }
+    }
+
+    private func showPeekNow() {
+        peekFallback?.cancel()
+        peekFallback = nil
+        guard peeking, let h = held, h.index < items.count else { return }
         let app = items[h.index]
-        let pid = app.processIdentifier
-        window.showPeek(index: h.index, image: thumbs.images[pid], icon: icons.image(for: app), name: app.localizedName ?? "")
-        thumbs.refresh([pid]) { [weak self] updated in
-            guard let self, self.peeking, let h = self.held, h.index < self.items.count,
-                  self.items[h.index].processIdentifier == updated, let img = self.thumbs.images[updated] else { return }
-            self.window.updatePeek(img)
+        window.showPeek(index: h.index, image: thumbs.images[app.processIdentifier], icon: icons.image(for: app),
+                        name: app.localizedName ?? "")
+        peekShown = true
+    }
+
+    private var wantsThumbs: Bool { mode == .previews || Settings.shared.holdToPeek }
+
+    private func thumbUpdated(_ pid: pid_t) {
+        guard let img = thumbs.images[pid] else { return }
+        if peeking, let h = held, h.index < items.count, items[h.index].processIdentifier == pid {
+            if peekShown { window.updatePeek(img) } else { showPeekNow() }
+        }
+        if isVisible, mode == .previews, let i = items.firstIndex(where: { $0.processIdentifier == pid }) {
+            window.updateThumb(i, img)
         }
     }
 
@@ -246,15 +277,8 @@ final class Switcher {
         }
         window.show(entries, rows: plan.rows, cols: plan.cols, mode: mode, selected: selected)
         if !quitting.isEmpty { refreshDim() }
-        if previews {
-            let shown = items
-            thumbs.refresh(shown.map(\.processIdentifier)) { [weak self] pid in
-                guard let self, self.isVisible, self.items == shown, self.mode == .previews,
-                      let i = shown.firstIndex(where: { $0.processIdentifier == pid }),
-                      let img = self.thumbs.images[pid] else { return }
-                self.window.updateThumb(i, img)
-            }
-        }
+        // Capture in the background so previews (and hold-to-peek) are ready by the time they're needed.
+        if wantsThumbs { thumbs.refresh(items.map(\.processIdentifier)) }
     }
 
     private func refreshDim() {

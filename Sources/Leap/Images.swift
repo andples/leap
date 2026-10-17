@@ -40,46 +40,69 @@ final class IconCache {
 final class ThumbnailCache {
     private(set) var images: [pid_t: CGImage] = [:]
     private var inFlight = Set<pid_t>()
+    private var capturedAt: [pid_t: Date] = [:]
+    /// Fires on the main thread whenever a pid gets a new image.
+    var onUpdate: ((pid_t) -> Void)?
 
-    var hasPermission: Bool { CGPreflightScreenCaptureAccess() }
+    /// Fetching shareable content is the slow part of a capture, so reuse it briefly.
+    private var content: SCShareableContent?
+    private var contentAt = Date.distantPast
+    private var granted = false
+
+    var hasPermission: Bool {
+        if !granted { granted = CGPreflightScreenCaptureAccess() }
+        return granted
+    }
 
     func prune(keeping apps: [NSRunningApplication]) {
         let live = Set(apps.map(\.processIdentifier))
         images = images.filter { live.contains($0.key) }
     }
 
-    /// Re-captures the frontmost on-screen window of each app; `updated` fires per new image.
-    func refresh(_ pids: [pid_t], updated: @escaping @MainActor (pid_t) -> Void) {
-        guard hasPermission else { return }
-        let targets = Self.frontWindowIDs(for: Set(pids)).filter { !inFlight.contains($0.key) }
-        guard !targets.isEmpty else { return }
+    func isCapturing(_ pid: pid_t) -> Bool { inFlight.contains(pid) }
+
+    /// Re-captures the frontmost on-screen window of each app. Returns the pids now being captured
+    /// (apps with no capturable window aren't included).
+    @discardableResult
+    func refresh(_ pids: [pid_t]) -> Set<pid_t> {
+        guard hasPermission else { return [] }
+        let windows = Self.frontWindowIDs(for: Set(pids))
+        let now = Date()
+        let targets = windows.filter { !inFlight.contains($0.key) && now.timeIntervalSince(capturedAt[$0.key] ?? .distantPast) > 1.5 }
+        let capturing = Set(windows.keys)
+        guard !targets.isEmpty else { return capturing.intersection(inFlight) }
         inFlight.formUnion(targets.keys)
         Task { [weak self] in
-            let results = await Self.capture(targets)
             guard let self else { return }
-            self.inFlight.subtract(targets.keys)
-            for (pid, img) in results {
-                self.images[pid] = img
-                updated(pid)
-            }
-        }
-    }
-
-    private nonisolated static func capture(_ targets: [pid_t: CGWindowID]) async -> [(pid_t, CGImage)] {
-        guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) else { return [] }
-        let byID = Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { a, _ in a })
-        return await withTaskGroup(of: (pid_t, CGImage)?.self) { group in
-            for (pid, wid) in targets {
-                guard let window = byID[wid] else { continue }
-                group.addTask {
-                    guard let img = try? await shoot(window) else { return nil }
-                    return (pid, img)
+            let content = await self.shareableContent(containing: Set(targets.values))
+            let byID = Dictionary((content?.windows ?? []).map { ($0.windowID, $0) }, uniquingKeysWith: { a, _ in a })
+            await withTaskGroup(of: (pid_t, CGImage?).self) { group in
+                for (pid, wid) in targets {
+                    let window = byID[wid]
+                    group.addTask {
+                        guard let window else { return (pid, nil) }
+                        return (pid, try? await Self.shoot(window))
+                    }
+                }
+                for await (pid, img) in group {
+                    self.inFlight.remove(pid)
+                    if let img {
+                        self.images[pid] = img
+                        self.capturedAt[pid] = Date()
+                        self.onUpdate?(pid)
+                    }
                 }
             }
-            var out: [(pid_t, CGImage)] = []
-            for await r in group { if let r { out.append(r) } }
-            return out
         }
+        return capturing.intersection(inFlight)
+    }
+
+    private func shareableContent(containing ids: Set<CGWindowID>) async -> SCShareableContent? {
+        if let content, Date().timeIntervalSince(contentAt) < 2,
+           ids.isSubset(of: Set(content.windows.map(\.windowID))) { return content }
+        content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        contentAt = Date()
+        return content
     }
 
     private nonisolated static func shoot(_ window: SCWindow) async throws -> CGImage {
