@@ -39,7 +39,8 @@ final class IconCache {
 @MainActor
 final class ThumbnailCache {
     private(set) var images: [pid_t: CGImage] = [:]
-    private var inFlight = Set<pid_t>()
+    /// Captures in progress, by start time (a capture that never returns expires after a few seconds).
+    private var inFlight: [pid_t: Date] = [:]
     private var capturedAt: [pid_t: Date] = [:]
     /// Fires on the main thread whenever a pid gets a new image.
     var onUpdate: ((pid_t) -> Void)?
@@ -57,9 +58,14 @@ final class ThumbnailCache {
     func prune(keeping apps: [NSRunningApplication]) {
         let live = Set(apps.map(\.processIdentifier))
         images = images.filter { live.contains($0.key) }
+        capturedAt = capturedAt.filter { live.contains($0.key) }
+        inFlight = inFlight.filter { live.contains($0.key) }
     }
 
-    func isCapturing(_ pid: pid_t) -> Bool { inFlight.contains(pid) }
+    func isCapturing(_ pid: pid_t) -> Bool {
+        guard let started = inFlight[pid] else { return false }
+        return Date().timeIntervalSince(started) < 4
+    }
 
     /// Re-captures the frontmost on-screen window of each app. Returns the pids now being captured
     /// (apps with no capturable window aren't included).
@@ -68,10 +74,10 @@ final class ThumbnailCache {
         guard hasPermission else { return [] }
         let windows = Self.frontWindowIDs(for: Set(pids))
         let now = Date()
-        let targets = windows.filter { !inFlight.contains($0.key) && now.timeIntervalSince(capturedAt[$0.key] ?? .distantPast) > 1.5 }
-        let capturing = Set(windows.keys)
-        guard !targets.isEmpty else { return capturing.intersection(inFlight) }
-        inFlight.formUnion(targets.keys)
+        let targets = windows.filter { !isCapturing($0.key) && now.timeIntervalSince(capturedAt[$0.key] ?? .distantPast) > 1.5 }
+        for pid in targets.keys { inFlight[pid] = now }
+        let capturing = Set(windows.keys.filter(isCapturing))
+        guard !targets.isEmpty else { return capturing }
         Task { [weak self] in
             guard let self else { return }
             let content = await self.shareableContent(containing: Set(targets.values))
@@ -85,7 +91,7 @@ final class ThumbnailCache {
                     }
                 }
                 for await (pid, img) in group {
-                    self.inFlight.remove(pid)
+                    self.inFlight[pid] = nil
                     if let img {
                         self.images[pid] = img
                         self.capturedAt[pid] = Date()
@@ -94,7 +100,7 @@ final class ThumbnailCache {
                 }
             }
         }
-        return capturing.intersection(inFlight)
+        return capturing
     }
 
     private func shareableContent(containing ids: Set<CGWindowID>) async -> SCShareableContent? {
@@ -108,7 +114,7 @@ final class ThumbnailCache {
     private nonisolated static func shoot(_ window: SCWindow) async throws -> CGImage {
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
-        let maxW = 1040.0, maxH = 680.0
+        let maxW = 880.0, maxH = 580.0
         let s = min(maxW / max(window.frame.width, 1), maxH / max(window.frame.height, 1), 2)
         config.width = max(Int(window.frame.width * s), 1)
         config.height = max(Int(window.frame.height * s), 1)

@@ -10,10 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tap: KeyTap?
     private var statusItem: NSStatusItem!
     private var permissionTimer: Timer?
+    private var secureInputTimer: Timer?
+    private var secureInput = false
     private let settingsWindow = SettingsWindow()
     private var settingsChanged: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             let mode = args.count > i + 2 ? Mode(rawValue: args[i + 2]) ?? .icons : .icons
@@ -25,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        #endif
 
         setupStatusItem()
         // objectWillChange fires before the new value lands, so react on the next runloop turn.
@@ -65,12 +69,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startTap() {
-        tap = KeyTap { [weak self] type, event in self?.switcher.handle(type, event) ?? false }
-        if tap == nil {
+        tap = KeyTap(handlers: switcher.tapHandlers)
+        guard let tap else {
             NSLog("Leap: failed to create event tap")
             return
         }
+        switcher.onClose = { tap.setClosed() }
         NativeSwitcher.setEnabled(false)
+        // Event taps get no keys while Secure Input is on (password fields, Secure Keyboard Entry),
+        // so hand ⌘Tab back to macOS for that time.
+        secureInputTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let secure = IsSecureEventInputEnabled()
+                guard secure != self.secureInput else { return }
+                self.secureInput = secure
+                NativeSwitcher.setEnabled(secure)
+            }
+        }
         rebuildMenu()
     }
 

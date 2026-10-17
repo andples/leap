@@ -3,11 +3,14 @@
 set -euo pipefail
 cd "${0:A:h}"
 
-swift build -c release --arch arm64
+# Universal binary (Apple silicon + Intel).
+ARCHS=(--arch arm64 --arch x86_64)
+swift build -c release "${ARCHS[@]}"
+BIN="$(swift build -c release "${ARCHS[@]}" --show-bin-path)/Leap"
 APP=build/Leap.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp .build/release/Leap "$APP/Contents/MacOS/Leap"
+cp "$BIN" "$APP/Contents/MacOS/Leap"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
 # Sign with a stable identity so macOS keeps the Accessibility/Screen Recording grants across rebuilds.
@@ -21,6 +24,7 @@ echo "built $APP (signed: $IDENTITY)"
 
 if [[ "${1:-}" == "--install" ]]; then
   pkill -x Leap || true
+  sleep 1
   rm -rf /Applications/Leap.app
   cp -R "$APP" /Applications/
   open /Applications/Leap.app

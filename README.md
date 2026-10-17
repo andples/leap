@@ -22,7 +22,7 @@ A fast ⌘Tab replacement for macOS with Vimium-style hint keys.
 ## Build
 
 ```sh
-./build.sh            # build/Leap.app
+./build.sh            # build/Leap.app (universal: Apple silicon + Intel, macOS 14+)
 ./build.sh --install  # copy to /Applications and launch
 swift test            # grid/hint logic tests
 ```
@@ -35,4 +35,20 @@ so macOS keeps permissions across rebuilds (falls back to ad-hoc signing, which 
 - **Accessibility** (required): intercepts ⌘Tab and activates apps.
 - **Screen Recording** (previews mode only): window thumbnails.
 
-The native switcher is disabled while Leap runs and restored when it quits.
+The native switcher is disabled while Leap runs and restored when it quits or crashes. While
+Secure Input is on (password fields, Terminal's Secure Keyboard Entry) apps can't see keystrokes,
+so Leap hands ⌘Tab back to macOS until it's off. If Leap is force-quit (which can't be intercepted),
+open and quit it once, or log out, to get the native ⌘Tab back.
+
+## Privacy
+
+Everything stays on your Mac. Keystrokes are never logged or stored: the event tap only looks for
+⌘Tab and, while the switcher is open, the keys you press in it. Leap remembers settings and how
+often you switch to each app (by bundle ID) in its preferences. With Screen Recording granted,
+window thumbnails are captured for previews/hold-to-peek and kept in memory only.
+
+## Speed
+
+The event tap runs on its own thread and decides pass/swallow from a tiny locked state, so nothing
+on the main thread can delay your typing. Icons are pre-rendered, the panel is reused, nothing animates,
+and window captures happen in the background.

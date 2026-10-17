@@ -25,6 +25,9 @@ enum KeyMap {
 
     static func isArrow(_ code: CGKeyCode) -> Bool { (123...126).contains(Int(code)) }
 
+    /// Whether the key types "q" in the active layout (cached via the label cache).
+    static func isQ(_ code: CGKeyCode) -> Bool { label(code: code) == "Q" }
+
     /// Call when the keyboard layout changes.
     static func invalidate() { labels.removeAll() }
 

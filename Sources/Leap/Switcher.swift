@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import LeapCore
 
-/// The ⌘Tab state machine. `handle` runs inside the event tap, so it must stay cheap.
+/// The ⌘Tab state machine. Events arrive on the main thread from `KeyTap`, which has already decided what to swallow.
 @MainActor
 final class Switcher {
     private let apps: AppTracker
@@ -17,7 +17,6 @@ final class Switcher {
     /// Apps asked to quit from the switcher; shown dimmed until they're gone.
     private var quitting = Set<pid_t>()
     private var typed: [KeyPos] = []
-    private var swallowed = Set<Int64>()
     private(set) var isVisible = false
     private var pendingPresent: DispatchWorkItem?
     private var previewing = false
@@ -30,6 +29,9 @@ final class Switcher {
     private var peekShown = false
     private var peekFallback: DispatchWorkItem?
     private static let holdDelay = 0.22
+
+    /// Tells the event tap to stop swallowing keys.
+    var onClose: (() -> Void)?
 
     var mode: Mode {
         get { Settings.shared.mode }
@@ -63,41 +65,32 @@ final class Switcher {
 
     // MARK: Event handling
 
-    func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
-        switch type {
-        case .flagsChanged:
-            if isVisible && !event.flags.contains(.maskCommand) { commit() }
-            return false
-        case .keyDown:
-            let code = event.getIntegerValueField(.keyboardEventKeycode)
-            let flags = event.flags
-            if !isVisible {
-                guard code == kVK_Tab, flags.contains(.maskCommand),
-                      !flags.contains(.maskControl), !flags.contains(.maskAlternate) else { return false }
-                swallowed.insert(code)
-                endPreview()
-                show(reverse: flags.contains(.maskShift))
-                return true
-            }
-            swallowed.insert(code)
-            let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            // Holding a hint key (or Q) must not re-trigger it.
-            if isRepeat && code != kVK_Tab && !KeyMap.isArrow(CGKeyCode(code)) { return true }
-            key(CGKeyCode(code), shift: flags.contains(.maskShift))
-            return true
-        case .keyUp:
-            let code = event.getIntegerValueField(.keyboardEventKeycode)
-            if let h = held, Int64(h.code) == code { releaseHeld() }
-            return swallowed.remove(code) != nil
-        default:
-            return false
-        }
+    var tapHandlers: KeyTap.Handlers {
+        KeyTap.Handlers(
+            open: { [weak self] reverse in
+                guard let self else { return }
+                self.endPreview()
+                self.show(reverse: reverse)
+            },
+            key: { [weak self] code, shift, isRepeat in
+                guard let self, self.isVisible else { return }
+                // Holding a hint key (or Q) must not re-trigger it.
+                if isRepeat && Int(code) != kVK_Tab && !KeyMap.isArrow(code) { return }
+                self.key(code, shift: shift)
+            },
+            keyUp: { [weak self] code in
+                guard let self, let h = self.held, h.code == code else { return }
+                self.releaseHeld()
+            },
+            commandReleased: { [weak self] in self?.commit() },
+            cancel: { [weak self] in self?.hide() }
+        )
     }
 
     private func key(_ code: CGKeyCode, shift: Bool) {
         if held != nil {
             // Q while holding a hint key quits that app; any other key just drops the hold.
-            if KeyMap.character(code)?.lowercased() == "q" {
+            if KeyMap.isQ(code) {
                 cancelHold()
                 quitSelected()
                 return
@@ -122,7 +115,7 @@ final class Switcher {
         default:
             if let pos = KeyMap.positions[code] {
                 hint(pos, code: code)
-            } else if KeyMap.character(code)?.lowercased() == "q" {
+            } else if KeyMap.isQ(code) {
                 quitSelected()
             }
         }
@@ -248,7 +241,10 @@ final class Switcher {
 
     private func show(reverse: Bool) {
         finder.refresh()
-        guard prepare() else { return }
+        guard prepare() else {
+            onClose?()
+            return
+        }
         if reverse { selected = items.count - 1 }
         typed = []
         isVisible = true
@@ -345,6 +341,7 @@ final class Switcher {
 
     private func hide() {
         cancelHold()
+        onClose?()
         isVisible = false
         quitting = []
         pendingPresent?.cancel()
@@ -379,6 +376,8 @@ final class Switcher {
 
     // MARK: Debug
 
+    #if DEBUG
+
     /// Renders the switcher for the current apps into a PNG (no permissions needed).
     func snapshot(to path: String, mode m: Mode) {
         Settings.shared.mode = m
@@ -408,4 +407,5 @@ final class Switcher {
             try? png.write(to: URL(fileURLWithPath: path))
         }
     }
+    #endif
 }
