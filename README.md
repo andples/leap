@@ -6,6 +6,8 @@ A fast ⌘Tab replacement for macOS with Vimium-style hint keys.
 - **Hint keys** jump straight to an app: the 16 right-hand keys at the QWERTY positions
   `7 8 9 0 / U I O P / J K L ; / M , . /`. Labels come from your **active keyboard layout**
   (Colemak-DH shows `7 8 9 0 / L U Y ; / N E I O / H , . /`).
+- **Keep jumping**: while ⌘ is held, each hint tap (or click) switches straight to that app and the switcher
+  stays open, so you can hop between several apps in one go. Releasing ⌘ closes it.
 - The grid sizes itself to the number of apps (`ceil(n/4)` rows) and mirrors the physical keys.
   Most recent app gets the home-row index finger; the current app goes last. Over 16 apps → two-key hints.
 - **Space** toggles Icons ⇄ Window Previews (remembered). **Arrows** move, **Return** switches,

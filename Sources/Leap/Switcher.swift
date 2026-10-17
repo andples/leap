@@ -48,7 +48,7 @@ final class Switcher {
             guard let self else { return }
             if self.previewing { self.endPreview(); return }
             self.selected = i
-            self.commit()
+            self.jump()
         }
         window.onHover = { [weak self] i in self?.hover(i) }
         window.onDragHover = { [weak self] i in self?.dragHover(i) }
@@ -140,7 +140,7 @@ final class Switcher {
             if Settings.shared.holdToPeek {
                 beginHold(code: code, index: i)
             } else {
-                commit()
+                jump()
             }
         case .prefix:
             refreshDim()
@@ -205,7 +205,7 @@ final class Switcher {
     private func releaseHeld() {
         let wasPeeking = peeking
         cancelHold()
-        if !wasPeeking { commit() }
+        if !wasPeeking { jump() }
     }
 
     private func cancelHold() {
@@ -376,6 +376,14 @@ final class Switcher {
     }
 
     // MARK: Finishing
+
+    /// Switch to the selected app but keep the switcher open while ⌘ is held, so you can keep jumping.
+    /// The grid doesn't rearrange while open, so every key keeps pointing at the same app.
+    private func jump() {
+        guard isVisible, selected < items.count else { return }
+        window.select(selected)
+        Activator.activate(items[selected])
+    }
 
     private func commit() {
         guard isVisible else { return }
